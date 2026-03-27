@@ -21,8 +21,7 @@
     const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
 
     // State
-    let selectedImageDataURL = null; // Original quality for display
-    let selectedImageForAPI = null;  // Optimized for API upload
+    let selectedImageDataURL = null;
     let resultImageURL = null;
 
     // ==================== API Key Management ====================
@@ -72,32 +71,13 @@
 
         const reader = new FileReader();
         reader.onload = (event) => {
-            const img = new Image();
-            img.onload = () => {
-                // Show original quality on screen
-                previewImage.src = event.target.result;
-                previewImage.classList.add('visible');
-                placeholderContent.style.display = 'none';
-                imagePickerArea.classList.add('has-image');
-                selectedImageDataURL = event.target.result;
-
-                // Create optimized version for API (max 1024px, JPEG)
-                const maxSize = 1024;
-                let w = img.naturalWidth;
-                let h = img.naturalHeight;
-                if (w > maxSize || h > maxSize) {
-                    if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
-                    else { w = Math.round(w * maxSize / h); h = maxSize; }
-                }
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-                selectedImageForAPI = canvas.toDataURL('image/jpeg', 0.85);
-
-                updateButtonStates();
-            };
-            img.src = event.target.result;
+            const dataURL = event.target.result;
+            previewImage.src = dataURL;
+            previewImage.classList.add('visible');
+            placeholderContent.style.display = 'none';
+            imagePickerArea.classList.add('has-image');
+            selectedImageDataURL = dataURL;
+            updateButtonStates();
         };
         reader.readAsDataURL(file);
     });
@@ -199,7 +179,7 @@
         showLoading('이미지 편집 중... (최대 1~2분)');
 
         try {
-            const imageURL = await editImageWithGrok(apiKey, selectedImageForAPI, prompt);
+            const imageURL = await editImageWithGrok(apiKey, selectedImageDataURL, prompt);
             resultImageURL = imageURL;
             resultImage.src = imageURL;
             resultImage.crossOrigin = 'anonymous';
