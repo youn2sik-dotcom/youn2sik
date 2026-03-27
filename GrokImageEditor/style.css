@@ -455,8 +455,11 @@ body {
     font-size: 14px;
     font-weight: 500;
     z-index: 2000;
-    animation: toastIn 0.3s ease, toastOut 0.3s ease 2.2s forwards;
-    white-space: nowrap;
+    animation: toastIn 0.3s ease, toastOut 0.3s ease 4s forwards;
+    white-space: normal;
+    max-width: calc(100vw - 40px);
+    text-align: center;
+    word-break: break-word;
 }
 
 .toast.error {

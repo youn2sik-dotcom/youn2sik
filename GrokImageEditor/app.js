@@ -21,7 +21,8 @@
     const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
 
     // State
-    let selectedImageDataURL = null;
+    let selectedImageDataURL = null; // Original quality for display
+    let selectedImageForAPI = null;  // Optimized for API upload
     let resultImageURL = null;
 
     // ==================== API Key Management ====================
@@ -69,23 +70,31 @@
         const file = e.target.files[0];
         if (!file) return;
 
-        // Convert to JPEG via canvas to ensure API compatibility (iPhone may use HEIC)
         const reader = new FileReader();
         reader.onload = (event) => {
             const img = new Image();
             img.onload = () => {
-                const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth;
-                canvas.height = img.naturalHeight;
-                canvas.getContext('2d').drawImage(img, 0, 0);
-                const jpegDataURL = canvas.toDataURL('image/jpeg', 1.0);
-
-                previewImage.src = jpegDataURL;
+                // Show original quality on screen
+                previewImage.src = event.target.result;
                 previewImage.classList.add('visible');
                 placeholderContent.style.display = 'none';
                 imagePickerArea.classList.add('has-image');
+                selectedImageDataURL = event.target.result;
 
-                selectedImageDataURL = jpegDataURL;
+                // Create optimized version for API (max 1024px, JPEG)
+                const maxSize = 1024;
+                let w = img.naturalWidth;
+                let h = img.naturalHeight;
+                if (w > maxSize || h > maxSize) {
+                    if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
+                    else { w = Math.round(w * maxSize / h); h = maxSize; }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                selectedImageForAPI = canvas.toDataURL('image/jpeg', 0.85);
+
                 updateButtonStates();
             };
             img.src = event.target.result;
@@ -131,8 +140,14 @@
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-            const errorData = await response.json().catch(() => null);
-            const message = errorData?.error?.message || `HTTP 오류 ${response.status}`;
+            const errorText = await response.text().catch(() => '');
+            let message = `HTTP ${response.status}`;
+            try {
+                const errorData = JSON.parse(errorText);
+                message = errorData?.error?.message || errorData?.message || errorText.substring(0, 200);
+            } catch {
+                message = errorText.substring(0, 200) || `HTTP 오류 ${response.status}`;
+            }
             if (response.status === 401) throw new Error('API 키가 유효하지 않습니다.');
             if (response.status === 429) throw new Error('API 요청 한도 초과. 잠시 후 다시 시도해주세요.');
             throw new Error(message);
@@ -229,7 +244,7 @@
         showLoading('이미지 분석 중... (1단계/2단계)');
 
         try {
-            const imageURL = await editImageWithGrok(apiKey, selectedImageDataURL, prompt);
+            const imageURL = await editImageWithGrok(apiKey, selectedImageForAPI, prompt);
             resultImageURL = imageURL;
             resultImage.src = imageURL;
             resultImage.crossOrigin = 'anonymous';
