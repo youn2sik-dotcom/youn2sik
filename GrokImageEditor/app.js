@@ -21,7 +21,7 @@
     const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
 
     // State
-    let selectedImageBase64 = null;
+    let selectedImageDataURL = null;
     let resultImageURL = null;
 
     // ==================== API Key Management ====================
@@ -69,16 +69,26 @@
         const file = e.target.files[0];
         if (!file) return;
 
+        // Convert to JPEG via canvas to ensure API compatibility (iPhone may use HEIC)
         const reader = new FileReader();
         reader.onload = (event) => {
-            const dataURL = event.target.result;
-            previewImage.src = dataURL;
-            previewImage.classList.add('visible');
-            placeholderContent.style.display = 'none';
-            imagePickerArea.classList.add('has-image');
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                canvas.getContext('2d').drawImage(img, 0, 0);
+                const jpegDataURL = canvas.toDataURL('image/jpeg', 1.0);
 
-            selectedImageBase64 = dataURL.split(',')[1];
-            updateButtonStates();
+                previewImage.src = jpegDataURL;
+                previewImage.classList.add('visible');
+                placeholderContent.style.display = 'none';
+                imagePickerArea.classList.add('has-image');
+
+                selectedImageDataURL = jpegDataURL;
+                updateButtonStates();
+            };
+            img.src = event.target.result;
         };
         reader.readAsDataURL(file);
     });
@@ -87,7 +97,7 @@
 
     function updateButtonStates() {
         const hasPrompt = promptInput.value.trim().length > 0;
-        editBtn.disabled = !selectedImageBase64 || !hasPrompt;
+        editBtn.disabled = !selectedImageDataURL || !hasPrompt;
         generateBtn.disabled = !hasPrompt;
     }
 
@@ -95,35 +105,42 @@
 
     // ==================== Grok API Call ====================
 
-    async function callGrokAPI(prompt, imageBase64 = null) {
+    async function callGrokAPI(prompt, imageDataURL = null) {
         const apiKey = getApiKey();
         if (!apiKey) {
             throw new Error('설정에서 API 키를 먼저 입력해주세요.');
         }
 
-        const content = [];
+        const messages = [];
 
-        if (imageBase64) {
-            content.push({
-                type: 'text',
-                text: `Edit this image: ${prompt}`
+        if (imageDataURL) {
+            // Image editing: send image + text prompt
+            messages.push({
+                role: 'user',
+                content: [
+                    {
+                        type: 'image_url',
+                        image_url: {
+                            url: imageDataURL
+                        }
+                    },
+                    {
+                        type: 'text',
+                        text: prompt
+                    }
+                ]
             });
-            content.push({
-                type: 'image_url',
-                image_url: {
-                    url: `data:image/jpeg;base64,${imageBase64}`
-                }
+        } else {
+            // Text-only image generation
+            messages.push({
+                role: 'user',
+                content: prompt
             });
         }
 
         const body = {
             model: 'grok-2-image',
-            messages: [
-                {
-                    role: 'user',
-                    content: imageBase64 ? content : prompt
-                }
-            ]
+            messages: messages
         };
 
         // 120 second timeout
@@ -195,12 +212,12 @@
 
     editBtn.addEventListener('click', async () => {
         const prompt = promptInput.value.trim();
-        if (!prompt || !selectedImageBase64) return;
+        if (!prompt || !selectedImageDataURL) return;
 
         showLoading('이미지 편집 중... (최대 1~2분)');
 
         try {
-            const imageURL = await callGrokAPI(prompt, selectedImageBase64);
+            const imageURL = await callGrokAPI(prompt, selectedImageDataURL);
             if (imageURL) {
                 resultImageURL = imageURL;
                 resultImage.src = imageURL;
