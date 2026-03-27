@@ -69,33 +69,16 @@
         const file = e.target.files[0];
         if (!file) return;
 
-        // Resize image to reduce base64 size for faster API calls
         const reader = new FileReader();
         reader.onload = (event) => {
-            const img = new Image();
-            img.onload = () => {
-                const maxSize = 1024;
-                let w = img.width;
-                let h = img.height;
-                if (w > maxSize || h > maxSize) {
-                    if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
-                    else { w = Math.round(w * maxSize / h); h = maxSize; }
-                }
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-                const dataURL = canvas.toDataURL('image/jpeg', 0.8);
+            const dataURL = event.target.result;
+            previewImage.src = dataURL;
+            previewImage.classList.add('visible');
+            placeholderContent.style.display = 'none';
+            imagePickerArea.classList.add('has-image');
 
-                previewImage.src = dataURL;
-                previewImage.classList.add('visible');
-                placeholderContent.style.display = 'none';
-                imagePickerArea.classList.add('has-image');
-
-                selectedImageBase64 = dataURL.split(',')[1];
-                updateButtonStates();
-            };
-            img.src = event.target.result;
+            selectedImageBase64 = dataURL.split(',')[1];
+            updateButtonStates();
         };
         reader.readAsDataURL(file);
     });
