@@ -13,6 +13,7 @@
     const resultImage = document.getElementById('resultImage');
     const saveBtn = document.getElementById('saveBtn');
     const loadingOverlay = document.getElementById('loadingOverlay');
+    const loadingText = document.querySelector('.loading-sub');
     const settingsBtn = document.getElementById('settingsBtn');
     const settingsModal = document.getElementById('settingsModal');
     const closeSettingsBtn = document.getElementById('closeSettingsBtn');
@@ -44,7 +45,18 @@
         toast.textContent = message;
         document.body.appendChild(toast);
 
-        setTimeout(() => toast.remove(), 2500);
+        setTimeout(() => toast.remove(), 3500);
+    }
+
+    // ==================== Loading State ====================
+
+    function showLoading(message) {
+        loadingOverlay.hidden = false;
+        if (loadingText) loadingText.textContent = message || '잠시만 기다려주세요';
+    }
+
+    function hideLoading() {
+        loadingOverlay.hidden = true;
     }
 
     // ==================== Image Selection ====================
@@ -57,17 +69,33 @@
         const file = e.target.files[0];
         if (!file) return;
 
+        // Resize image to reduce base64 size for faster API calls
         const reader = new FileReader();
         reader.onload = (event) => {
-            const dataURL = event.target.result;
-            previewImage.src = dataURL;
-            previewImage.classList.add('visible');
-            placeholderContent.style.display = 'none';
-            imagePickerArea.classList.add('has-image');
+            const img = new Image();
+            img.onload = () => {
+                const maxSize = 1024;
+                let w = img.width;
+                let h = img.height;
+                if (w > maxSize || h > maxSize) {
+                    if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
+                    else { w = Math.round(w * maxSize / h); h = maxSize; }
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                const dataURL = canvas.toDataURL('image/jpeg', 0.8);
 
-            // Extract base64 (strip prefix)
-            selectedImageBase64 = dataURL.split(',')[1];
-            updateButtonStates();
+                previewImage.src = dataURL;
+                previewImage.classList.add('visible');
+                placeholderContent.style.display = 'none';
+                imagePickerArea.classList.add('has-image');
+
+                selectedImageBase64 = dataURL.split(',')[1];
+                updateButtonStates();
+            };
+            img.src = event.target.result;
         };
         reader.readAsDataURL(file);
     });
@@ -87,8 +115,7 @@
     async function callGrokAPI(prompt, imageBase64 = null) {
         const apiKey = getApiKey();
         if (!apiKey) {
-            showToast('설정에서 API 키를 먼저 입력해주세요.', 'error');
-            return null;
+            throw new Error('설정에서 API 키를 먼저 입력해주세요.');
         }
 
         const content = [];
@@ -104,11 +131,6 @@
                     url: `data:image/jpeg;base64,${imageBase64}`
                 }
             });
-        } else {
-            content.push({
-                type: 'text',
-                text: prompt
-            });
         }
 
         const body = {
@@ -121,18 +143,40 @@
             ]
         };
 
-        const response = await fetch('https://api.x.ai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify(body)
-        });
+        // 120 second timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+        let response;
+        try {
+            response = await fetch('https://api.x.ai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+        } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                throw new Error('요청 시간이 초과되었습니다. (2분) 다시 시도해주세요.');
+            }
+            // CORS or network error
+            throw new Error('네트워크 오류: API 서버에 연결할 수 없습니다. 인터넷 연결을 확인하거나 API 키를 확인해주세요.');
+        }
+        clearTimeout(timeoutId);
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => null);
             const message = errorData?.error?.message || `HTTP 오류 ${response.status}`;
+            if (response.status === 401) {
+                throw new Error('API 키가 유효하지 않습니다. 설정에서 올바른 키를 입력해주세요.');
+            }
+            if (response.status === 429) {
+                throw new Error('API 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요.');
+            }
             throw new Error(message);
         }
 
@@ -161,7 +205,7 @@
             if (urlMatch) return urlMatch[0];
         }
 
-        throw new Error('응답에서 이미지를 찾을 수 없습니다.');
+        throw new Error('응답에서 이미지를 찾을 수 없습니다. 다른 프롬프트로 시도해주세요.');
     }
 
     // ==================== Edit Image ====================
@@ -170,7 +214,7 @@
         const prompt = promptInput.value.trim();
         if (!prompt || !selectedImageBase64) return;
 
-        loadingOverlay.hidden = false;
+        showLoading('이미지 편집 중... (최대 1~2분)');
 
         try {
             const imageURL = await callGrokAPI(prompt, selectedImageBase64);
@@ -184,7 +228,7 @@
         } catch (error) {
             showToast(error.message, 'error');
         } finally {
-            loadingOverlay.hidden = true;
+            hideLoading();
         }
     });
 
@@ -194,7 +238,7 @@
         const prompt = promptInput.value.trim();
         if (!prompt) return;
 
-        loadingOverlay.hidden = false;
+        showLoading('이미지 생성 중... (최대 1~2분)');
 
         try {
             const imageURL = await callGrokAPI(prompt);
@@ -208,7 +252,7 @@
         } catch (error) {
             showToast(error.message, 'error');
         } finally {
-            loadingOverlay.hidden = true;
+            hideLoading();
         }
     });
 
@@ -221,20 +265,18 @@
         }
 
         try {
-            // Try canvas approach for cross-origin images
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.onload = () => {
                 const canvas = document.createElement('canvas');
                 canvas.width = img.naturalWidth;
                 canvas.height = img.naturalHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
+                canvas.getContext('2d').drawImage(img, 0, 0);
 
                 canvas.toBlob((blob) => {
                     if (!blob) {
-                        // Fallback: open in new tab
                         window.open(resultImageURL, '_blank');
+                        showToast('이미지를 길게 눌러 저장하세요.', '');
                         return;
                     }
                     const url = URL.createObjectURL(blob);
@@ -249,7 +291,7 @@
                 }, 'image/png');
             };
             img.onerror = () => {
-                // Fallback: open in new tab for manual save
+                // On iPhone Safari: open image so user can long-press to save
                 window.open(resultImageURL, '_blank');
                 showToast('이미지를 길게 눌러 저장하세요.', '');
             };
