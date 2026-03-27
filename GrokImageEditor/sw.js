@@ -1,4 +1,4 @@
-const CACHE_NAME = 'grok-editor-v5';
+const CACHE_NAME = 'grok-editor-v6';
 const ASSETS = [
     './',
     './index.html',

@@ -197,7 +197,7 @@
     async function editImageWithGrok(apiKey, imageDataURL, editPrompt) {
         // Step 1: Use grok-2-vision to describe the image in detail
         showLoading('이미지 분석 중... (1단계/2단계)');
-        const visionData = await xaiRequest(apiKey, 'grok-2-vision', [
+        const visionData = await xaiRequest(apiKey, 'grok-2-vision-latest', [
             {
                 role: 'user',
                 content: [
