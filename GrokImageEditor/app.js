@@ -105,45 +105,8 @@
 
     // ==================== Grok API Call ====================
 
-    async function callGrokAPI(prompt, imageDataURL = null) {
-        const apiKey = getApiKey();
-        if (!apiKey) {
-            throw new Error('설정에서 API 키를 먼저 입력해주세요.');
-        }
-
-        const messages = [];
-
-        if (imageDataURL) {
-            // Image editing: send image + text prompt
-            messages.push({
-                role: 'user',
-                content: [
-                    {
-                        type: 'image_url',
-                        image_url: {
-                            url: imageDataURL
-                        }
-                    },
-                    {
-                        type: 'text',
-                        text: prompt
-                    }
-                ]
-            });
-        } else {
-            // Text-only image generation
-            messages.push({
-                role: 'user',
-                content: prompt
-            });
-        }
-
-        const body = {
-            model: 'grok-2-image',
-            messages: messages
-        };
-
-        // 120 second timeout
+    // Helper: call xAI chat completions
+    async function xaiRequest(apiKey, model, messages) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120000);
 
@@ -155,7 +118,7 @@
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${apiKey}`
                 },
-                body: JSON.stringify(body),
+                body: JSON.stringify({ model, messages }),
                 signal: controller.signal
             });
         } catch (err) {
@@ -163,26 +126,23 @@
             if (err.name === 'AbortError') {
                 throw new Error('요청 시간이 초과되었습니다. (2분) 다시 시도해주세요.');
             }
-            // CORS or network error
-            throw new Error('네트워크 오류: API 서버에 연결할 수 없습니다. 인터넷 연결을 확인하거나 API 키를 확인해주세요.');
+            throw new Error('네트워크 오류: API 서버에 연결할 수 없습니다. 인터넷 연결을 확인해주세요.');
         }
         clearTimeout(timeoutId);
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => null);
             const message = errorData?.error?.message || `HTTP 오류 ${response.status}`;
-            if (response.status === 401) {
-                throw new Error('API 키가 유효하지 않습니다. 설정에서 올바른 키를 입력해주세요.');
-            }
-            if (response.status === 429) {
-                throw new Error('API 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요.');
-            }
+            if (response.status === 401) throw new Error('API 키가 유효하지 않습니다.');
+            if (response.status === 429) throw new Error('API 요청 한도 초과. 잠시 후 다시 시도해주세요.');
             throw new Error(message);
         }
 
-        const data = await response.json();
+        return await response.json();
+    }
 
-        // Extract image URL from response
+    // Extract image URL from API response
+    function extractImageURL(data) {
         const choices = data.choices;
         if (!choices || choices.length === 0) {
             throw new Error('응답에서 결과를 찾을 수 없습니다.');
@@ -190,7 +150,6 @@
 
         const messageContent = choices[0].message?.content;
 
-        // Content can be a string or array of blocks
         if (Array.isArray(messageContent)) {
             for (const block of messageContent) {
                 if (block.type === 'image_url' && block.image_url?.url) {
@@ -199,13 +158,64 @@
             }
         }
 
-        // Try to find URL in string content
         if (typeof messageContent === 'string') {
             const urlMatch = messageContent.match(/https?:\/\/[^\s"']+/);
             if (urlMatch) return urlMatch[0];
         }
 
-        throw new Error('응답에서 이미지를 찾을 수 없습니다. 다른 프롬프트로 시도해주세요.');
+        throw new Error('응답에서 이미지를 찾을 수 없습니다.');
+    }
+
+    // Extract text from API response
+    function extractText(data) {
+        const messageContent = data.choices?.[0]?.message?.content;
+        if (typeof messageContent === 'string') return messageContent;
+        if (Array.isArray(messageContent)) {
+            for (const block of messageContent) {
+                if (block.type === 'text') return block.text;
+            }
+        }
+        throw new Error('응답에서 텍스트를 찾을 수 없습니다.');
+    }
+
+    // Image editing: 2-step (vision to describe → image generation)
+    async function editImageWithGrok(apiKey, imageDataURL, editPrompt) {
+        // Step 1: Use grok-2-vision to describe the image in detail
+        showLoading('이미지 분석 중... (1단계/2단계)');
+        const visionData = await xaiRequest(apiKey, 'grok-2-vision', [
+            {
+                role: 'user',
+                content: [
+                    {
+                        type: 'image_url',
+                        image_url: { url: imageDataURL }
+                    },
+                    {
+                        type: 'text',
+                        text: 'Describe this image in extreme detail in English. Include every visual element: subject appearance (face, hair, body, clothing, accessories, pose, expression), background details, lighting, colors, style, composition, and mood. Be as specific as possible.'
+                    }
+                ]
+            }
+        ]);
+        const description = extractText(visionData);
+
+        // Step 2: Use grok-2-image to generate edited version
+        showLoading('이미지 생성 중... (2단계/2단계)');
+        const genPrompt = `Based on this image description:\n"${description}"\n\nNow generate a new image that is the same as described above, but with this modification: ${editPrompt}\n\nKeep everything else exactly the same. Only change what was requested.`;
+
+        const imageData = await xaiRequest(apiKey, 'grok-2-image', [
+            { role: 'user', content: genPrompt }
+        ]);
+
+        return extractImageURL(imageData);
+    }
+
+    // Text-only image generation
+    async function generateImageWithGrok(apiKey, prompt) {
+        const data = await xaiRequest(apiKey, 'grok-2-image', [
+            { role: 'user', content: prompt }
+        ]);
+        return extractImageURL(data);
     }
 
     // ==================== Edit Image ====================
@@ -213,18 +223,18 @@
     editBtn.addEventListener('click', async () => {
         const prompt = promptInput.value.trim();
         if (!prompt || !selectedImageDataURL) return;
+        const apiKey = getApiKey();
+        if (!apiKey) { showToast('설정에서 API 키를 먼저 입력해주세요.', 'error'); return; }
 
-        showLoading('이미지 편집 중... (최대 1~2분)');
+        showLoading('이미지 분석 중... (1단계/2단계)');
 
         try {
-            const imageURL = await callGrokAPI(prompt, selectedImageDataURL);
-            if (imageURL) {
-                resultImageURL = imageURL;
-                resultImage.src = imageURL;
-                resultImage.crossOrigin = 'anonymous';
-                resultSection.hidden = false;
-                showToast('이미지 편집 완료!', 'success');
-            }
+            const imageURL = await editImageWithGrok(apiKey, selectedImageDataURL, prompt);
+            resultImageURL = imageURL;
+            resultImage.src = imageURL;
+            resultImage.crossOrigin = 'anonymous';
+            resultSection.hidden = false;
+            showToast('이미지 편집 완료!', 'success');
         } catch (error) {
             showToast(error.message, 'error');
         } finally {
@@ -237,18 +247,18 @@
     generateBtn.addEventListener('click', async () => {
         const prompt = promptInput.value.trim();
         if (!prompt) return;
+        const apiKey = getApiKey();
+        if (!apiKey) { showToast('설정에서 API 키를 먼저 입력해주세요.', 'error'); return; }
 
         showLoading('이미지 생성 중... (최대 1~2분)');
 
         try {
-            const imageURL = await callGrokAPI(prompt);
-            if (imageURL) {
-                resultImageURL = imageURL;
-                resultImage.src = imageURL;
-                resultImage.crossOrigin = 'anonymous';
-                resultSection.hidden = false;
-                showToast('이미지 생성 완료!', 'success');
-            }
+            const imageURL = await generateImageWithGrok(apiKey, prompt);
+            resultImageURL = imageURL;
+            resultImage.src = imageURL;
+            resultImage.crossOrigin = 'anonymous';
+            resultSection.hidden = false;
+            showToast('이미지 생성 완료!', 'success');
         } catch (error) {
             showToast(error.message, 'error');
         } finally {
