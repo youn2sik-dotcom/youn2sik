@@ -112,22 +112,23 @@
 
     promptInput.addEventListener('input', updateButtonStates);
 
-    // ==================== Grok API Call ====================
+    // ==================== Grok Imagine API ====================
+    // Docs: https://docs.x.ai/docs/guides/image-generations
 
-    // Helper: call xAI chat completions
-    async function xaiRequest(apiKey, model, messages) {
+    // Helper: make xAI API request with timeout and error handling
+    async function xaiFetch(apiKey, endpoint, body) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120000);
 
         let response;
         try {
-            response = await fetch('https://api.x.ai/v1/chat/completions', {
+            response = await fetch(`https://api.x.ai/v1${endpoint}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${apiKey}`
                 },
-                body: JSON.stringify({ model, messages }),
+                body: JSON.stringify(body),
                 signal: controller.signal
             });
         } catch (err) {
@@ -144,7 +145,7 @@
             let message = `HTTP ${response.status}`;
             try {
                 const errorData = JSON.parse(errorText);
-                message = errorData?.error?.message || errorData?.message || errorText.substring(0, 200);
+                message = errorData?.error?.message || errorData?.error || errorData?.message || errorText.substring(0, 200);
             } catch {
                 message = errorText.substring(0, 200) || `HTTP 오류 ${response.status}`;
             }
@@ -156,80 +157,34 @@
         return await response.json();
     }
 
-    // Extract image URL from API response
+    // Extract image URL from /v1/images/* response
     function extractImageURL(data) {
-        const choices = data.choices;
-        if (!choices || choices.length === 0) {
-            throw new Error('응답에서 결과를 찾을 수 없습니다.');
+        // /v1/images/generations and /v1/images/edits return { data: [{ url, b64_json }] }
+        if (data.data && data.data.length > 0) {
+            if (data.data[0].url) return data.data[0].url;
+            if (data.data[0].b64_json) return 'data:image/png;base64,' + data.data[0].b64_json;
         }
-
-        const messageContent = choices[0].message?.content;
-
-        if (Array.isArray(messageContent)) {
-            for (const block of messageContent) {
-                if (block.type === 'image_url' && block.image_url?.url) {
-                    return block.image_url.url;
-                }
-            }
-        }
-
-        if (typeof messageContent === 'string') {
-            const urlMatch = messageContent.match(/https?:\/\/[^\s"']+/);
-            if (urlMatch) return urlMatch[0];
-        }
-
         throw new Error('응답에서 이미지를 찾을 수 없습니다.');
     }
 
-    // Extract text from API response
-    function extractText(data) {
-        const messageContent = data.choices?.[0]?.message?.content;
-        if (typeof messageContent === 'string') return messageContent;
-        if (Array.isArray(messageContent)) {
-            for (const block of messageContent) {
-                if (block.type === 'text') return block.text;
-            }
-        }
-        throw new Error('응답에서 텍스트를 찾을 수 없습니다.');
-    }
-
-    // Image editing: 2-step (vision to describe → image generation)
+    // Image editing: POST /v1/images/edits
     async function editImageWithGrok(apiKey, imageDataURL, editPrompt) {
-        // Step 1: Use grok-2-vision to describe the image in detail
-        showLoading('이미지 분석 중... (1단계/2단계)');
-        const visionData = await xaiRequest(apiKey, 'grok-2-vision-latest', [
-            {
-                role: 'user',
-                content: [
-                    {
-                        type: 'image_url',
-                        image_url: { url: imageDataURL }
-                    },
-                    {
-                        type: 'text',
-                        text: 'Describe this image in extreme detail in English. Include every visual element: subject appearance (face, hair, body, clothing, accessories, pose, expression), background details, lighting, colors, style, composition, and mood. Be as specific as possible.'
-                    }
-                ]
+        const data = await xaiFetch(apiKey, '/images/edits', {
+            model: 'grok-imagine-image',
+            prompt: editPrompt,
+            image: {
+                url: imageDataURL
             }
-        ]);
-        const description = extractText(visionData);
-
-        // Step 2: Use grok-2-image to generate edited version
-        showLoading('이미지 생성 중... (2단계/2단계)');
-        const genPrompt = `Based on this image description:\n"${description}"\n\nNow generate a new image that is the same as described above, but with this modification: ${editPrompt}\n\nKeep everything else exactly the same. Only change what was requested.`;
-
-        const imageData = await xaiRequest(apiKey, 'grok-2-image', [
-            { role: 'user', content: genPrompt }
-        ]);
-
-        return extractImageURL(imageData);
+        });
+        return extractImageURL(data);
     }
 
-    // Text-only image generation
+    // Image generation: POST /v1/images/generations
     async function generateImageWithGrok(apiKey, prompt) {
-        const data = await xaiRequest(apiKey, 'grok-2-image', [
-            { role: 'user', content: prompt }
-        ]);
+        const data = await xaiFetch(apiKey, '/images/generations', {
+            model: 'grok-imagine-image',
+            prompt: prompt
+        });
         return extractImageURL(data);
     }
 
@@ -241,7 +196,7 @@
         const apiKey = getApiKey();
         if (!apiKey) { showToast('설정에서 API 키를 먼저 입력해주세요.', 'error'); return; }
 
-        showLoading('이미지 분석 중... (1단계/2단계)');
+        showLoading('이미지 편집 중... (최대 1~2분)');
 
         try {
             const imageURL = await editImageWithGrok(apiKey, selectedImageForAPI, prompt);
